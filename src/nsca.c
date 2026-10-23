@@ -205,7 +205,11 @@ int main(int argc, char **argv){
 		       V     */
 
                 /* daemonize and start listening for requests... */
-                if(foreground || fork()==0){
+                if(!foreground && (result=fork())<0){
+                        syslog(LOG_ERR,"Could not fork daemon process (%d: %s)",errno,strerror(errno));
+                        do_exit(STATE_CRITICAL);
+                        }
+                if(foreground || result==0){
 
                         /* we're a daemon - set up a new process group */
                         if(!foreground) setsid();
@@ -661,13 +665,15 @@ static void register_poll(short events, int fd){
                 }
 
         /* else add it to the list */
-        if(maxpfds==0){
-                maxpfds++;
-                pfds=malloc(sizeof(struct pollfd));
-                }
-	else if(npfds+1 > maxpfds){
-                maxpfds++;
-                pfds=realloc(pfds, sizeof(struct pollfd) * maxpfds);
+        if(npfds+1 > maxpfds){
+                int newmax=(maxpfds==0)?16:maxpfds*2;
+                void *newptr=realloc(pfds, sizeof(struct pollfd) * newmax);
+                if(newptr==NULL){
+                        syslog(LOG_ERR,"Could not allocate memory for connection handlers - aborting");
+                        do_exit(STATE_CRITICAL);
+                        }
+                pfds=newptr;
+                maxpfds=newmax;
                 }
 
         pfds[npfds].fd=fd;
@@ -695,13 +701,15 @@ static void register_read_handler(int fd, void (*fp)(int, void *), void *data){
                 }
 
         /* else add it to the list */
-        if(maxrhand==0){
-                maxrhand++;
-                rhand=malloc(sizeof(struct handler_entry));
-                }
-	else if(nrhand+1 > maxrhand){
-                maxrhand++;
-                rhand=realloc(rhand, sizeof(struct handler_entry) * maxrhand);
+        if(nrhand+1 > maxrhand){
+                int newmax=(maxrhand==0)?16:maxrhand*2;
+                void *newptr=realloc(rhand, sizeof(struct handler_entry) * newmax);
+                if(newptr==NULL){
+                        syslog(LOG_ERR,"Could not allocate memory for connection handlers - aborting");
+                        do_exit(STATE_CRITICAL);
+                        }
+                rhand=newptr;
+                maxrhand=newmax;
                 }
 
         rhand[nrhand].fd=fd;
@@ -729,13 +737,15 @@ static void register_write_handler(int fd, void (*fp)(int, void *), void *data){
                 }
 
         /* else add it to the list */
-        if(maxwhand==0){
-                maxwhand++;
-                whand=malloc(sizeof(struct handler_entry));
-                }
-	else if(nwhand+1 > maxwhand){
-                maxwhand++;
-                whand=realloc(whand, sizeof(struct handler_entry) * maxwhand);
+        if(nwhand+1 > maxwhand){
+                int newmax=(maxwhand==0)?16:maxwhand*2;
+                void *newptr=realloc(whand, sizeof(struct handler_entry) * newmax);
+                if(newptr==NULL){
+                        syslog(LOG_ERR,"Could not allocate memory for connection handlers - aborting");
+                        do_exit(STATE_CRITICAL);
+                        }
+                whand=newptr;
+                maxwhand=newmax;
                 }
 
         whand[nwhand].fd=fd;
@@ -789,7 +799,10 @@ static void handle_events(void){
 	if(sigrestart==TRUE || sigshutdown==TRUE)
 		return;
 
-        poll(pfds,npfds,-1);
+        /* on error (e.g. EINTR from a signal) revents are not valid, so don't act on them */
+        if(poll(pfds,npfds,-1)<=0)
+                return;
+
         for(i=0;i<npfds;i++){
                 if((pfds[i].events&POLLIN) && (pfds[i].revents&(POLLIN|POLLERR|POLLHUP|POLLNVAL))){
                         pfds[i].events&=~POLLIN;
@@ -816,8 +829,10 @@ static void handle_events(void){
         for(i=0;i<npfds;i++){
                 if(pfds[i].events==0){
                         npfds--;
-                        pfds[i].fd=pfds[npfds].fd;
-                        pfds[i].events=pfds[npfds].events;
+                        pfds[i]=pfds[npfds];
+
+                        /* re-check the entry we just moved into this slot */
+                        i--;
                         }
                 }
 
@@ -914,9 +929,8 @@ static void wait_for_connections(void) {
                 syslog(LOG_DEBUG,"Listening for connections on port %d\n",server_port);
                 }
 
-	/* socket should be non-blocking for mult-process daemon */
-	if(mode==MULTI_PROCESS_DAEMON)
-		fcntl(sock,F_SETFL,O_NONBLOCK);
+	/* socket should be non-blocking so a vanished client can never stall accept() */
+	fcntl(sock,F_SETFL,fcntl(sock,F_GETFL,0)|O_NONBLOCK);
 
         /* listen for connection requests */
         if(mode==SINGLE_PROCESS_DAEMON)
@@ -983,12 +997,29 @@ static void accept_connection(int sock, void *unused) {
             }
 
 			/* try and handle temporary errors */
-			if(errno==EWOULDBLOCK || errno==EINTR || errno==ECHILD || errno==ECONNABORTED){
-				if(mode==MULTI_PROCESS_DAEMON)
-					sleep(1);
+			if(errno==EWOULDBLOCK || errno==EAGAIN || errno==EINTR || errno==ECHILD || errno==ECONNABORTED){
+				if(mode==MULTI_PROCESS_DAEMON){
+					/* wake up as soon as a client arrives, but still check signal flags every second */
+					struct pollfd lpfd;
+					lpfd.fd=sock;
+					lpfd.events=POLLIN;
+					lpfd.revents=0;
+					poll(&lpfd,1,1000);
+					}
 				else
 					return;
 		    }
+
+			/* out of descriptors/memory - back off briefly instead of closing the listening socket for good */
+			else if(errno==EMFILE || errno==ENFILE || errno==ENOBUFS || errno==ENOMEM){
+				syslog(LOG_ERR,"Network server accept failure (%d: %s) - will retry",errno,strerror(errno));
+				if(mode==MULTI_PROCESS_DAEMON)
+					sleep(1);
+				else{
+					poll(NULL,0,100);
+					return;
+					}
+			}
 			else {
 				break;
             }
@@ -1029,6 +1060,9 @@ static void accept_connection(int sock, void *unused) {
 
         pid=fork();
         if(pid) {
+            if(pid<0)
+                syslog(LOG_ERR,"Could not fork child to handle connection (%d: %s)",errno,strerror(errno));
+
             /* parent doesn't need the new connection */
             close(new_sd);
             return;
@@ -1095,7 +1129,9 @@ static void handle_connection(int sock, void *data){
                 syslog(LOG_INFO,"Handling the connection...");
 
         /* socket should be non-blocking */
-        fcntl(sock,F_GETFL,&flags);
+        flags=fcntl(sock,F_GETFL,0);
+        if(flags<0)
+                flags=0;
         fcntl(sock,F_SETFL,flags|O_NONBLOCK);
 
         /* initialize encryption/decryption routines (server generates the IV to use and send to the client) */
@@ -1126,8 +1162,8 @@ static void handle_connection(int sock, void *data){
                 }
 
         /* for some reason we didn't send all the bytes we were supposed to */
-	else if(bytes_to_send<sizeof(send_packet)){
-                syslog(LOG_ERR,"Only able to send %d of %lu bytes of init packet to client\n",rc,(unsigned long)sizeof(send_packet));
+	else if(bytes_to_send<(int)sizeof(send_packet)){
+                syslog(LOG_ERR,"Only able to send %d of %lu bytes of init packet to client\n",bytes_to_send,(unsigned long)sizeof(send_packet));
                 encrypt_cleanup(decryption_method,CI);
                 close(sock);
 		if(mode==MULTI_PROCESS_DAEMON)
@@ -1138,6 +1174,7 @@ static void handle_connection(int sock, void *data){
         /* open the command file if we're aggregating writes */
         if(aggregate_writes==TRUE){
                 if(open_command_file()==ERROR){
+                        encrypt_cleanup(decryption_method,CI);
                         close(sock);
 			if(mode==MULTI_PROCESS_DAEMON)
 				do_exit(STATE_CRITICAL);
