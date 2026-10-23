@@ -345,6 +345,10 @@ static void free_memory(void){
 		free(pid_file);
 		pid_file=NULL;
 		}
+	if(check_result_path){
+		free(check_result_path);
+		check_result_path=NULL;
+		}
 
 	return;
 	}
@@ -395,6 +399,7 @@ static int read_config_file(char *filename){
                 varname=strtok(input_buffer,"=");
                 if(varname==NULL){
                         syslog(LOG_ERR,"No variable name specified in config file '%s' - Line %d\n",filename,line);
+                        fclose(fp);
                         return ERROR;
                         }
 
@@ -402,13 +407,15 @@ static int read_config_file(char *filename){
                 varvalue=strtok(NULL,"\n");
                 if(varvalue==NULL){
                         syslog(LOG_ERR,"No variable value specified in config file '%s' - Line %d\n",filename,line);
+                        fclose(fp);
                         return ERROR;
                         }
 
                 if(!strcmp(varname,"server_port")){
                         server_port=atoi(varvalue);
-                        if((server_port<1024 && (geteuid()!=0)) || server_port<0){
+                        if((server_port<1024 && (geteuid()!=0)) || server_port<0 || server_port>65535){
                                 syslog(LOG_ERR,"Invalid port number specified in config file '%s' - Line %d\n",filename,line);
+                                fclose(fp);
                                 return ERROR;
                                 }
                         }
@@ -419,6 +426,7 @@ static int read_config_file(char *filename){
 		else if(strstr(input_buffer,"command_file")){
                         if(strlen(varvalue)>sizeof(command_file)-1){
                                 syslog(LOG_ERR,"Command file name is too long in config file '%s' - Line %d\n",filename,line);
+                                fclose(fp);
                                 return ERROR;
                                 }
                         strncpy(command_file,varvalue,sizeof(command_file)-1);
@@ -427,6 +435,7 @@ static int read_config_file(char *filename){
 		else if(strstr(input_buffer,"alternate_dump_file")){
                         if(strlen(varvalue)>sizeof(alternate_dump_file)-1){
                                 syslog(LOG_ERR,"Alternate dump file name is too long in config file '%s' - Line %d\n",filename,line);
+                                fclose(fp);
                                 return ERROR;
                                 }
                         strncpy(alternate_dump_file,varvalue,sizeof(alternate_dump_file)-1);
@@ -435,6 +444,7 @@ static int read_config_file(char *filename){
 		else if(strstr(input_buffer,"password")){
                         if(strlen(varvalue)>sizeof(password)-1){
                                 syslog(LOG_ERR,"Password is too long in config file '%s' - Line %d\n",filename,line);
+                                fclose(fp);
                                 return ERROR;
                                 }
                         strncpy(password,varvalue,sizeof(password)-1);
@@ -478,6 +488,7 @@ static int read_config_file(char *filename){
                                 if(decryption_method>=2)
                                         syslog(LOG_ERR,"Daemon was not compiled with mcrypt library, so decryption is unavailable.\n");
 #endif
+                                fclose(fp);
                                 return ERROR;
                                 }
                         }
@@ -504,14 +515,18 @@ static int read_config_file(char *filename){
                     else if(strstr(input_buffer,"check_result_path")){
                             if(strlen(varvalue)>MAX_INPUT_BUFFER-1){
                                     syslog(LOG_ERR,"Check result path is too long in config file '%s' - Line %d\n",filename,line);
+                                    fclose(fp);
                                     return ERROR;
                                     }
+                            free(check_result_path);
                             check_result_path=strdup(varvalue);
 
                             int checkresult_test_fd=-1;
                             char *checkresult_test=NULL;
-                            asprintf(&checkresult_test,"%s/nsca.test.%i",check_result_path,getpid());
-                            checkresult_test_fd=open(checkresult_test,O_WRONLY|O_CREAT,S_IWUSR);
+                            if(check_result_path==NULL || asprintf(&checkresult_test,"%s/nsca.test.%i",check_result_path,getpid())<0)
+                                    checkresult_test=NULL;
+                            if(checkresult_test!=NULL)
+                                    checkresult_test_fd=open(checkresult_test,O_WRONLY|O_CREAT,S_IWUSR);
                             if (checkresult_test_fd>=0){
                                     close(checkresult_test_fd);
                                     unlink(checkresult_test);
@@ -520,6 +535,7 @@ static int read_config_file(char *filename){
                             else {
                                     syslog(LOG_ERR,"check_result_path config variable found, but directory not writeable.\n");
                                     free(checkresult_test);
+                                    fclose(fp);
                                     return ERROR;
                                     }
                             }
@@ -534,21 +550,22 @@ static int read_config_file(char *filename){
                         max_packet_age=strtoul(varvalue,NULL,10);
                         if(max_packet_age>900){
                                 syslog(LOG_ERR,"Max packet age cannot be greater than 15 minutes (900 seconds).\n");
+                                fclose(fp);
                                 return ERROR;
                                 }
                         }
 
                 else if(!strcmp(varname,"nsca_user"))
-			nsca_user=strdup(varvalue);
+			{ free(nsca_user); nsca_user=strdup(varvalue); }
 
                 else if(!strcmp(varname,"nsca_group"))
-			nsca_group=strdup(varvalue);
+			{ free(nsca_group); nsca_group=strdup(varvalue); }
 
                 else if(!strcmp(varname,"nsca_chroot"))
-			nsca_chroot=strdup(varvalue);
+			{ free(nsca_chroot); nsca_chroot=strdup(varvalue); }
 
 		else if(!strcmp(varname,"pid_file"))
-			pid_file=strdup(varvalue);
+			{ free(pid_file); pid_file=strdup(varvalue); }
 
 		else if(!strcmp(varname,"log_facility")){
 			if((get_log_facility(varvalue))==OK){
@@ -562,6 +579,7 @@ static int read_config_file(char *filename){
 
 		else{
                         syslog(LOG_ERR,"Unknown option specified in config file '%s' - Line %d\n",filename,line);
+                        fclose(fp);
                         return ERROR;
                         }
                 }
@@ -1839,7 +1857,7 @@ static int write_pid_file(uid_t usr, gid_t grp){
 	        }
 
 	/* write new pid file */
-	if((fd=open(pid_file,O_WRONLY | O_CREAT,0644))>=0){
+	if((fd=open(pid_file,O_WRONLY | O_CREAT | O_TRUNC,0644))>=0){
 		sprintf(pbuf,"%d\n",(int)getpid());
 		write(fd,pbuf,strlen(pbuf));
 		fchown(fd,usr,grp);
