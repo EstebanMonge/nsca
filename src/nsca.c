@@ -1301,7 +1301,8 @@ static void handle_connection_read(int sock, void *data){
         u_int32_t calculated_crc32;
         struct crypt_instance *CI;
         int16_t return_code;
-        unsigned long packet_age=0L;
+        long packet_age=0L;
+        time_t current_time;
         int bytes_to_recv;
         int rc;
         char host_name[MAX_HOSTNAME_LENGTH];
@@ -1341,7 +1342,6 @@ static void handle_connection_read(int sock, void *data){
                 syslog(LOG_ERR,"Data sent from client was too short (%d < %d), aborting...",bytes_to_recv,packet_length);
                 encrypt_cleanup(decryption_method, CI);
                 close(sock);
-		return;
                 if(mode==SINGLE_PROCESS_DAEMON)
                         return;
                 else
@@ -1358,7 +1358,7 @@ static void handle_connection_read(int sock, void *data){
         /* make sure this is the right type of packet */
         if(ntohs(receive_packet.packet_version)!=NSCA_PACKET_VERSION_3){
                 syslog(LOG_ERR,"Received invalid packet type/version from client - possibly due to client using wrong password or crypto algorithm?");
-		/*return;*/
+                encrypt_cleanup(decryption_method, CI);
 		close(sock);
                 if(mode==SINGLE_PROCESS_DAEMON)
                         return;
@@ -1372,7 +1372,7 @@ static void handle_connection_read(int sock, void *data){
         calculated_crc32=calculate_crc32((char *)&receive_packet,packet_length);
         if(packet_crc32!=calculated_crc32){
                 syslog(LOG_ERR,"Dropping packet with invalid CRC32 - possibly due to client using wrong password or crypto algorithm?");
-                /*return;*/
+                encrypt_cleanup(decryption_method, CI);
 		close(sock);
                 if(mode==SINGLE_PROCESS_DAEMON)
                         return;
@@ -1384,12 +1384,26 @@ static void handle_connection_read(int sock, void *data){
         strncpy(host_name,receive_packet.host_name,sizeof(host_name)-1);
         host_name[sizeof(host_name)-1]='\0';
 
+        /* calculate how old (or how far in the future) this packet's timestamp is.
+         *
+         * The timestamp is the one we sent in the init packet, so this measures how long
+         * the client held the connection before sending - client clock skew doesn't matter.
+         * Rejecting old packets limits replays (see max_packet_age in nsca.cfg) and stops
+         * delayed results from being recorded as current, since Nagios timestamps them
+         * when we receive them. Packets up to max_packet_age in the future are accepted
+         * too, as intended by the 2.9.1 change that allowed future timestamps.
+         *
+         * Note: 2.9.1 accidentally stopped reading the timestamps used here and 2.10
+         * removed the calculation, so the check was silently disabled until this fix.
+         */
+        time(&current_time);
+        packet_age=(long)current_time-(long)ntohl(receive_packet.timestamp);
+
         if(debug==TRUE)
-                  syslog(LOG_ERR,"Time difference in packet: %lu seconds for host %s", packet_age, host_name);
-        if((max_packet_age>0 && (packet_age>max_packet_age) && (packet_age>=0)) ||
-                ((max_packet_age>0) && (packet_age<(0-max_packet_age)) && (packet_age < 0))
-        ){
-                syslog(LOG_ERR,"Dropping packet with stale timestamp for %s - packet was %lu seconds old.",host_name,packet_age);
+                  syslog(LOG_ERR,"Time difference in packet: %ld seconds for host %s", packet_age, host_name);
+        if(max_packet_age>0 && (unsigned long)(packet_age<0?-packet_age:packet_age)>max_packet_age){
+                syslog(LOG_ERR,"Dropping packet with stale timestamp for %s - packet was %ld seconds old.",host_name,packet_age);
+                encrypt_cleanup(decryption_method, CI);
 		close(sock);
                 if(mode==SINGLE_PROCESS_DAEMON)
                         return;
