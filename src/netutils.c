@@ -50,11 +50,13 @@ int my_connect(char *host_name,int port,int *sd,char *proto){
 	struct protoent *ptrp;
 	int result;
 	struct addrinfo *aip = 0;
-	struct addrinfo hints = {
-	  (AI_V4MAPPED | AI_ADDRCONFIG),
-	  AF_UNSPEC,
-	};
+	struct addrinfo *try = 0;
+	struct addrinfo hints;
 	char server_port[32];
+
+	memset(&hints,0,sizeof(hints));
+	hints.ai_flags = (AI_V4MAPPED | AI_ADDRCONFIG);
+	hints.ai_family = AF_UNSPEC;
 
 	/* map transport protocol name to protocol number */
 	if(((ptrp=getprotobyname(proto)))==NULL){
@@ -66,22 +68,37 @@ int my_connect(char *host_name,int port,int *sd,char *proto){
 	hints.ai_socktype = (!strcmp(proto,"udp"))?SOCK_DGRAM:SOCK_STREAM;
 	sprintf(server_port,"%d",port);
 	result = getaddrinfo(host_name,server_port,&hints,&aip);
-	if (result < 0) {
-		fprintf(stderr, "Host name lookup failed: '%s'\n",host_name);
+	if (result != 0) {
+		fprintf(stderr, "Host name lookup failed: '%s': %s\n",host_name,gai_strerror(result));
 		return STATE_UNKNOWN;
 		}
 
-	/* create a socket */
-	*sd=socket(aip->ai_family,aip->ai_socktype,aip->ai_protocol);
+	/* try each address returned until one connects successfully */
+	*sd=-1;
+	result=-1;
+	for(try=aip;try!=NULL;try=try->ai_next){
+
+		/* create a socket */
+		*sd=socket(try->ai_family,try->ai_socktype,try->ai_protocol);
+		if(*sd<0)
+			continue;
+
+		/* open a connection */
+		result=connect(*sd,try->ai_addr,try->ai_addrlen);
+		if(result==0)
+			break;
+
+		/* this address didn't work - try the next one (if any) */
+		close(*sd);
+		*sd=-1;
+	        }
+	freeaddrinfo(aip);
+
 	if(*sd<0){
 		fprintf(stderr, "Socket creation failed\n");
-		freeaddrinfo(aip);
 		return STATE_UNKNOWN;
 	        }
 
-	/* open a connection */
-	result=connect(*sd,aip->ai_addr,aip->ai_addrlen);
-	freeaddrinfo(aip);
 	if(result<0){
 		switch(errno){
 		case ECONNREFUSED:
