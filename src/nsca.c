@@ -505,12 +505,14 @@ static int read_config_file(char *filename){
                             char *checkresult_test=NULL;
                             asprintf(&checkresult_test,"%s/nsca.test.%i",check_result_path,getpid());
                             checkresult_test_fd=open(checkresult_test,O_WRONLY|O_CREAT,S_IWUSR);
-                            if (checkresult_test_fd>0){
+                            if (checkresult_test_fd>=0){
+                                    close(checkresult_test_fd);
                                     unlink(checkresult_test);
+                                    free(checkresult_test);
                                     }
                             else {
-                                    printf("error!\n");
                                     syslog(LOG_ERR,"check_result_path config variable found, but directory not writeable.\n");
+                                    free(checkresult_test);
                                     return ERROR;
                                     }
                             }
@@ -1489,11 +1491,15 @@ static int write_checkresult_file(char *host_name, char *svc_description, int re
     /* create safe checkresult file */
     asprintf(&checkresult_file,"%s/cXXXXXX",check_result_path);
     checkresult_file_fd=mkstemp(checkresult_file);
-    if(checkresult_file_fd>0) {
+    if(checkresult_file_fd>=0) {
         checkresult_file_fp=fdopen(checkresult_file_fd,"w");
     }
-    else {
+    if(checkresult_file_fd<0 || checkresult_file_fp==NULL) {
         syslog(LOG_ERR,"Unable to open and write checkresult file '%s', failing back to PIPE",checkresult_file);
+        if(checkresult_file_fd>=0)
+            close(checkresult_file_fd);
+        free(checkresult_file);
+        umask(old_umask);
         return write_check_result(host_name,svc_description,return_code,plugin_output,check_time);
     }
 
@@ -1529,9 +1535,18 @@ static int write_checkresult_file(char *host_name, char *svc_description, int re
         syslog(LOG_DEBUG,"checkresult completion file '%s' open.",checkresult_ok_file);
     }
     checkresult_ok_file_fp = fopen(checkresult_ok_file,"w");
-    fclose(checkresult_ok_file_fp);
+    if(checkresult_ok_file_fp!=NULL) {
+        fclose(checkresult_ok_file_fp);
+    }
+    else {
+        syslog(LOG_ERR,"Unable to create checkresult completion file '%s'",checkresult_ok_file);
+    }
     /* reset umask */
     umask(old_umask);
+
+    /* don't leak the paths we built above */
+    free(checkresult_file);
+    free(checkresult_ok_file);
 
     return OK;
 }
@@ -1909,4 +1924,3 @@ void sighandler(int sig){
 
 	return;
         }
-
