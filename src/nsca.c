@@ -1542,7 +1542,11 @@ static int write_checkresult_file(char *host_name, char *svc_description, int re
     old_umask=umask(new_umask);
 
     /* create safe checkresult file */
-    asprintf(&checkresult_file,"%s/cXXXXXX",check_result_path);
+    if(asprintf(&checkresult_file,"%s/cXXXXXX",check_result_path)<0) {
+        syslog(LOG_ERR,"Unable to allocate checkresult file name, failing back to PIPE");
+        umask(old_umask);
+        return write_check_result(host_name,svc_description,return_code,plugin_output,check_time);
+    }
     checkresult_file_fd=mkstemp(checkresult_file);
     if(checkresult_file_fd>=0) {
         checkresult_file_fp=fdopen(checkresult_file_fd,"w");
@@ -1562,8 +1566,8 @@ static int write_checkresult_file(char *host_name, char *svc_description, int re
 
     time(&current_time);
     fprintf(checkresult_file_fp,"### NSCA Passive Check Result ###\n");
-    fprintf(checkresult_file_fp,"# Time: %s",ctime(&current_time));
-    fprintf(checkresult_file_fp,"file_time=%ld\n\n",current_time);
+    fprintf(checkresult_file_fp,"# Time: %s",(ctime(&current_time)!=NULL)?ctime(&current_time):"\n");
+    fprintf(checkresult_file_fp,"file_time=%ld\n\n",(long)current_time);
     fprintf(checkresult_file_fp,"### %s Check Result ###\n",(!*svc_description)?"Host":"Service");
     fprintf(checkresult_file_fp,"host_name=%s\n",host_name);
     if(strcmp(svc_description,"")) {
@@ -1574,16 +1578,30 @@ static int write_checkresult_file(char *host_name, char *svc_description, int re
     fprintf(checkresult_file_fp,"reschedule_check=0\n");
     /* We have no latency data at this point. */
     fprintf(checkresult_file_fp,"latency=0\n");
-    fprintf(checkresult_file_fp,"start_time=%lu.%lu\n",check_time,0L);
-    fprintf(checkresult_file_fp,"finish_time=%lu.%lu\n",check_time,0L);
+    fprintf(checkresult_file_fp,"start_time=%lu.%lu\n",(unsigned long)check_time,0UL);
+    fprintf(checkresult_file_fp,"finish_time=%lu.%lu\n",(unsigned long)check_time,0UL);
     fprintf(checkresult_file_fp,"return_code=%d\n",return_code);
     /* newlines in output are already escaped */
     fprintf(checkresult_file_fp,"output=%s\n",(plugin_output==NULL)?"":plugin_output);
     fprintf(checkresult_file_fp,"\n");
 
-    fclose(checkresult_file_fp);
+    /* a partial result file (e.g. disk full) must never be marked complete */
+    if(ferror(checkresult_file_fp) | fclose(checkresult_file_fp)) {
+        syslog(LOG_ERR,"Error writing checkresult file '%s', failing back to PIPE",checkresult_file);
+        unlink(checkresult_file);
+        free(checkresult_file);
+        umask(old_umask);
+        return write_check_result(host_name,svc_description,return_code,plugin_output,check_time);
+    }
+
     /* create and close ok file */
-    asprintf(&checkresult_ok_file,"%s.ok",checkresult_file);
+    if(asprintf(&checkresult_ok_file,"%s.ok",checkresult_file)<0) {
+        syslog(LOG_ERR,"Unable to allocate checkresult completion file name for '%s'",checkresult_file);
+        unlink(checkresult_file);
+        free(checkresult_file);
+        umask(old_umask);
+        return write_check_result(host_name,svc_description,return_code,plugin_output,check_time);
+    }
     if(debug==TRUE) {
         syslog(LOG_DEBUG,"checkresult completion file '%s' open.",checkresult_ok_file);
     }
