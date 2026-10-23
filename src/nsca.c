@@ -1158,7 +1158,7 @@ static int strict_mode_verify_spoofing(int sock, char *host_name)
      */ 
 
     struct sockaddr_storage peer_addr;
-    int peer_addr_len;
+    socklen_t peer_addr_len;
     int status;
     peer_addr_len = sizeof(peer_addr);
     status = getpeername(sock, (struct sockaddr *)&peer_addr, &peer_addr_len);
@@ -1170,7 +1170,8 @@ static int strict_mode_verify_spoofing(int sock, char *host_name)
     // Network-order bytes are in addr.sin_addr
 
     // Retrieve the address associated withe the host name we just read
-    struct addrinfo hints, *ai;
+    struct addrinfo hints, *ai = NULL, *ai_head = NULL;
+    int found_match = FALSE;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = peer_addr.ss_family;
@@ -1179,6 +1180,12 @@ static int strict_mode_verify_spoofing(int sock, char *host_name)
     hints.ai_protocol = IPPROTO_TCP;
 
     status = getaddrinfo(host_name, NULL, &hints, &ai);
+    if (status != 0) {
+        syslog(LOG_WARNING, "Strict mode could not resolve host '%s': %s",
+               host_name, gai_strerror(status));
+        return FALSE;
+    }
+    ai_head = ai;
 
     // A hostname can have multiple addresses.
     // We don't have port information, so we'll check all of them
@@ -1196,7 +1203,8 @@ static int strict_mode_verify_spoofing(int sock, char *host_name)
 
             // Both addresses should be in network order, so just compare longs
             if (peer_network_order == claimed_network_order) {
-                return TRUE;
+                found_match = TRUE;
+                break;
             }
         }
         else if (ai->ai_addr->sa_family == AF_INET6) {
@@ -1213,12 +1221,14 @@ static int strict_mode_verify_spoofing(int sock, char *host_name)
             }
 
             if (ipv6_no_differences) {
-                return TRUE;
+                found_match = TRUE;
+                break;
             }
         }
     }
 
-    return FALSE;
+    freeaddrinfo(ai_head);
+    return found_match;
 } 
 
 /* Convert newlines into the literals '\' and 'n'. Nagios Core runs the inverse
