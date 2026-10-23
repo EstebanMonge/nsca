@@ -178,6 +178,9 @@ int main(int argc, char **argv){
         /* generate the CRC 32 table */
         generate_crc32_table();
 
+	/* a client or command pipe reader going away must not kill us - write errors are handled instead */
+	signal(SIGPIPE,SIG_IGN);
+
 
 	/* how should we handle client connections? */
         switch(mode){
@@ -1505,10 +1508,13 @@ static void handle_connection_read(int sock, void *data){
         char *plugin_output_escaped = escape_newlines(plugin_output);
 
 
+        if (plugin_output_escaped==NULL)
+            syslog(LOG_ERR,"Could not allocate memory to escape plugin output for host '%s'",host_name);
+
         if (check_result_path==NULL){
-            write_check_result(host_name,svc_description,return_code,plugin_output_escaped,time(NULL));
+            write_check_result(host_name,svc_description,return_code,(plugin_output_escaped==NULL)?"":plugin_output_escaped,time(NULL));
         }else{
-            write_checkresult_file(host_name,svc_description,return_code,plugin_output_escaped,time(NULL));
+            write_checkresult_file(host_name,svc_description,return_code,(plugin_output_escaped==NULL)?"":plugin_output_escaped,time(NULL));
         }
 
         free(plugin_output_escaped);
@@ -1600,33 +1606,56 @@ static int write_checkresult_file(char *host_name, char *svc_description, int re
 
 /* writes service/host check results to the Nagios command file */
 static int write_check_result(char *host_name, char *svc_description, int return_code, char *plugin_output, time_t check_time) {
+    int attempt;
+    int failed=FALSE;
+
 	if(debug==TRUE) {
 		syslog(LOG_ERR,"Attempting to write to nagios command pipe");
     }
-    if(aggregate_writes==FALSE){
-        if(open_command_file()==ERROR) {
-            return ERROR;
+
+    /* a long-lived (aggregated) pipe may break if Nagios restarts, so reopen and retry once */
+    for(attempt=0;attempt<2;attempt++){
+
+        if(aggregate_writes==FALSE || command_file_fp==NULL){
+            if(open_command_file()==ERROR) {
+                syslog(LOG_ERR,"Could not open command file '%s' - dropping check result for host '%s'",command_file,host_name);
+                return ERROR;
+            }
         }
-    }
 
 	if(!strcmp(svc_description,"")) {
 		fprintf(command_file_fp,"[%lu] PROCESS_HOST_CHECK_RESULT;%s;%d;%s\n",(unsigned long)check_time,host_name,return_code,plugin_output);
-    }
+        }
 	else{
 		fprintf(command_file_fp,"[%lu] PROCESS_SERVICE_CHECK_RESULT;%s;%s;%d;%s\n",(unsigned long)check_time,host_name,svc_description,return_code,plugin_output);
-    }
-    if(aggregate_writes==FALSE) {
-        close_command_file();
-    }
-    else {
-        /* if we don't fflush() then we're writing in 4k non-CR-terminated blocks, and
-         * anything else (eg. pscwatch) which writes to the file will be writing into
-         * the middle of our commands.
-         */
-        fflush(command_file_fp);
+        }
+
+        if(aggregate_writes==FALSE) {
+            failed=ferror(command_file_fp);
+            if(fclose(command_file_fp)!=0)
+                failed=TRUE;
+            command_file_fp=NULL;
+        }
+        else {
+            /* if we don't fflush() then we're writing in 4k non-CR-terminated blocks, and
+             * anything else (eg. pscwatch) which writes to the file will be writing into
+             * the middle of our commands.
+             */
+            failed=(fflush(command_file_fp)!=0 || ferror(command_file_fp));
+            if(failed)
+                close_command_file();
+        }
+
+        if(!failed)
+            return OK;
+
+        /* only an aggregated (kept-open) pipe is worth retrying */
+        if(aggregate_writes==FALSE)
+            break;
     }
 
-    return OK;
+    syslog(LOG_ERR,"Error writing check result for host '%s' to command file '%s' (%d: %s)",host_name,command_file,errno,strerror(errno));
+    return ERROR;
 }
 
 
@@ -1639,6 +1668,10 @@ static int open_command_file(void)
 	/* file is already open */
 	if(command_file_fp!=NULL && using_alternate_dump_file==FALSE)
 		return OK;
+
+	/* we're about to retry the real command file, so release the alternate dump file */
+	if(command_file_fp!=NULL)
+		close_command_file();
 
 	do
 		fd = open(command_file,O_WRONLY|O_NONBLOCK|((append_to_file==TRUE)?O_APPEND:0));
@@ -1665,8 +1698,14 @@ static int open_command_file(void)
 	if (fd < 0 || (command_file_fp = fdopen(fd, (append_to_file == TRUE) ? "a" : "w")) == NULL) {
 		if (debug == TRUE)
 			syslog(LOG_ERR, "Could not open command file '%s' for %s", command_file, (append_to_file == TRUE) ? "appending" : "writing");
+		if (fd >= 0)
+			close(fd);
 		return ERROR;
 	}
+
+	/* O_NONBLOCK was only needed so open() doesn't hang without a reader - writes must not
+	 * silently drop results with EAGAIN when the pipe is momentarily full */
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
 
 	using_alternate_dump_file = FALSE;
 	return OK;
@@ -1677,7 +1716,8 @@ static int open_command_file(void)
 /* closes the command file */
 static void close_command_file(void){
 
-        fclose(command_file_fp);
+        if(command_file_fp!=NULL)
+                fclose(command_file_fp);
         command_file_fp=NULL;
 
         return;
