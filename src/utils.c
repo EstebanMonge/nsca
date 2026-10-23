@@ -276,25 +276,36 @@ static void generate_transmitted_iv(char *transmitted_iv){
         FILE *fp;
         int x;
         int seed=0;
+        size_t nread=0;
 
         /*********************************************************/
         /* fill IV buffer with data that's as random as possible */
         /*********************************************************/
 
-        /* try to get seed value from /dev/urandom, as its a better source of entropy */
+        /* try to read the IV directly from /dev/urandom, as its a much better source of entropy than seeding rand() */
         fp=fopen("/dev/urandom","r");
         if(fp!=NULL){
-                seed=fgetc(fp);
+                nread=fread(transmitted_iv,1,TRANSMITTED_IV_SIZE,fp);
                 fclose(fp);
                 }
 
-        /* else fallback to using the current time as the seed */
+        /* got all the random bytes we needed straight from the kernel CSPRNG */
+        if(nread==TRANSMITTED_IV_SIZE)
+                return;
+
+        /* fallback: /dev/urandom unavailable or short read, so seed rand() as well as we can and fill in the rest */
+        fp=fopen("/dev/urandom","r");
+        if(fp!=NULL){
+                if(fread(&seed,1,sizeof(seed),fp)!=sizeof(seed))
+                        seed=(int)time(NULL);
+                fclose(fp);
+                }
         else
                 seed=(int)time(NULL);
 
-        /* generate pseudo-random IV */
+        /* generate pseudo-random IV for any bytes we weren't able to read above */
         srand(seed);
-        for(x=0;x<TRANSMITTED_IV_SIZE;x++)
+        for(x=(int)nread;x<TRANSMITTED_IV_SIZE;x++)
                 transmitted_iv[x]=(int)((256.0*rand())/(RAND_MAX+1.0));
 
         return;
@@ -415,7 +426,8 @@ void randomize_buffer(char *buffer,int buffer_size){
 	/* try to get seed value from /dev/urandom, as its a better source of entropy */
 	fp=fopen("/dev/urandom","r");
 	if(fp!=NULL){
-		seed=fgetc(fp);
+		if(fread(&seed,1,sizeof(seed),fp)!=sizeof(seed))
+			seed=(int)time(NULL);
 		fclose(fp);
 	        }
 
