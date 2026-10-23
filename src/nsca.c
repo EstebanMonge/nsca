@@ -57,8 +57,8 @@ int     show_help=FALSE;
 int     show_license=FALSE;
 int     show_version=FALSE;
 
-int     sigrestart=FALSE;
-int     sigshutdown=FALSE;
+volatile sig_atomic_t sigrestart=FALSE;
+volatile sig_atomic_t sigshutdown=FALSE;
 
 int	using_alternate_dump_file=FALSE;
 static FILE *command_file_fp=NULL;
@@ -622,8 +622,11 @@ int get_log_facility(char *varvalue){
 
 /* get rid of all the children we can... */
 static void reap_children(int sig){
+        int saved_errno=errno;
 
         while(waitpid(-1,NULL,WNOHANG)>0);
+
+        errno=saved_errno;
 
 	return;
         }
@@ -634,7 +637,9 @@ static void reap_children(int sig){
 static void install_child_handler(void){
         struct sigaction sa;
 
+        memset(&sa,0,sizeof(sa));
         sa.sa_handler=reap_children;
+        sigemptyset(&sa.sa_mask);
         sa.sa_flags=SA_NOCLDSTOP;
         sigaction(SIGCHLD,&sa,NULL);
 
@@ -920,6 +925,11 @@ static void wait_for_connections(void) {
 
 		/* bail out if necessary */
 		if(sigrestart==TRUE || sigshutdown==TRUE){
+			if(sigshutdown==TRUE)
+				syslog(LOG_NOTICE,"Caught SIGTERM - shutting down...\n");
+			else
+				syslog(LOG_NOTICE,"Caught SIGHUP - restarting...\n");
+
 			/* close the socket we're listening on */
 			close(sock);
 			break;
@@ -1906,8 +1916,6 @@ void sighandler(int sig){
 	if(sig==SIGHUP){
 
 		sigrestart=TRUE;
-
-		syslog(LOG_NOTICE,"Caught SIGHUP - restarting...\n");
 	        }
 
 	/* else begin shutting down... */
@@ -1918,8 +1926,6 @@ void sighandler(int sig){
 			exit(STATE_CRITICAL);
 
 		sigshutdown=TRUE;
-
-		syslog(LOG_NOTICE,"Caught SIG%s - shutting down...\n",sigs[sig]);
 	        }
 
 	return;
