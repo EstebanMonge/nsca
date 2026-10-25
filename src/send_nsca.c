@@ -94,8 +94,8 @@ int main(int argc, char **argv){
 		printf("Last Modified: %s\n",MODIFICATION_DATE);
 		printf("License: GPL v2\n");
 		printf("Encryption Routines: ");
-#ifdef HAVE_LIBMCRYPT
-		printf("AVAILABLE");
+#ifdef HAVE_LIBGCRYPT
+		printf("AVAILABLE (libgcrypt)");
 #else
 		printf("NOT AVAILABLE");
 #endif
@@ -629,61 +629,14 @@ int read_config_file(char *filename){
 
 			encryption_method=atoi(varvalue);
 
-			switch(encryption_method){
-			case ENCRYPT_NONE:
-				break;
-			case ENCRYPT_XOR:
-				break;
-
-#ifdef HAVE_LIBMCRYPT
-			case ENCRYPT_DES:
-				break;
-			case ENCRYPT_3DES:
-				break;
-			case ENCRYPT_CAST128:
-				break;
-			case ENCRYPT_CAST256:
-				break;
-			case ENCRYPT_XTEA:
-				break;
-			case ENCRYPT_3WAY:
-				break;
-			case ENCRYPT_BLOWFISH:
-				break;
-			case ENCRYPT_TWOFISH:
-				break;
-			case ENCRYPT_LOKI97:
-				break;
-			case ENCRYPT_RC2:
-				break;
-			case ENCRYPT_ARCFOUR:
-				break;
-			case ENCRYPT_RIJNDAEL128:
-				break;
-			case ENCRYPT_RIJNDAEL192:
-				break;
-			case ENCRYPT_RIJNDAEL256:
-				break;
-			case ENCRYPT_WAKE:
-				break;
-			case ENCRYPT_SERPENT:
-				break;
-			case ENCRYPT_ENIGMA:
-				break;
-			case ENCRYPT_GOST:
-				break;
-			case ENCRYPT_SAFER64:
-				break;
-			case ENCRYPT_SAFER128:
-				break;
-			case ENCRYPT_SAFERPLUS:
-				break;
-#endif
-			default:
+			if(encrypt_method_supported(encryption_method)==FALSE){
 				printf("Invalid encryption method (%d) in config file '%s' - Line %d\n",encryption_method,filename,line);
-#ifndef HAVE_LIBMCRYPT
+#ifdef HAVE_LIBGCRYPT
 				if(encryption_method>=2)
-					printf("Client was not compiled with mcrypt library, so encryption is unavailable.\n");
+					printf("Valid encryption methods are 0, 1, 2, 3, 4, 8, 9, 14 and 20.\n");
+#else
+				if(encryption_method>=2)
+					printf("Client was not compiled with libgcrypt, so encryption is unavailable.\n");
 #endif
 				fclose(fp);
 				return ERROR;

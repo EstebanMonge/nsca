@@ -105,8 +105,8 @@ int main(int argc, char **argv){
                 printf("Last Modified: %s\n",MODIFICATION_DATE);
                 printf("License: GPL v2\n");
                 printf("Encryption Routines: ");
-#ifdef HAVE_LIBMCRYPT
-                printf("AVAILABLE");
+#ifdef HAVE_LIBGCRYPT
+                printf("AVAILABLE (libgcrypt)");
 #else
                 printf("NOT AVAILABLE");
 #endif
@@ -454,39 +454,14 @@ static int read_config_file(char *filename){
 
                         decryption_method=atoi(varvalue);
 
-                        switch(decryption_method){
-                        case ENCRYPT_NONE:
-                        case ENCRYPT_XOR:
-                                break;
-#ifdef HAVE_LIBMCRYPT
-                        case ENCRYPT_DES:
-                        case ENCRYPT_3DES:
-                        case ENCRYPT_CAST128:
-                        case ENCRYPT_CAST256:
-                        case ENCRYPT_XTEA:
-                        case ENCRYPT_3WAY:
-                        case ENCRYPT_BLOWFISH:
-                        case ENCRYPT_TWOFISH:
-                        case ENCRYPT_LOKI97:
-                        case ENCRYPT_RC2:
-                        case ENCRYPT_ARCFOUR:
-                        case ENCRYPT_RIJNDAEL128:
-                        case ENCRYPT_RIJNDAEL192:
-                        case ENCRYPT_RIJNDAEL256:
-                        case ENCRYPT_WAKE:
-                        case ENCRYPT_SERPENT:
-                        case ENCRYPT_ENIGMA:
-                        case ENCRYPT_GOST:
-                        case ENCRYPT_SAFER64:
-                        case ENCRYPT_SAFER128:
-                        case ENCRYPT_SAFERPLUS:
-                                break;
-#endif
-                        default:
+                        if(encrypt_method_supported(decryption_method)==FALSE){
                                 syslog(LOG_ERR,"Invalid decryption method (%d) in config file '%s' - Line %d\n",decryption_method,filename,line);
-#ifndef HAVE_LIBMCRYPT
+#ifdef HAVE_LIBGCRYPT
                                 if(decryption_method>=2)
-                                        syslog(LOG_ERR,"Daemon was not compiled with mcrypt library, so decryption is unavailable.\n");
+                                        syslog(LOG_ERR,"Valid decryption methods are 0, 1, 2, 3, 4, 8, 9, 14 and 20.\n");
+#else
+                                if(decryption_method>=2)
+                                        syslog(LOG_ERR,"Daemon was not compiled with libgcrypt, so decryption is unavailable.\n");
 #endif
                                 fclose(fp);
                                 return ERROR;

@@ -105,6 +105,20 @@ the daemon and client piece with the following commands...
 The binaries will be located in the `src/` directory after you
 run `make all` and will have to be installed manually.
 
+Encryption methods other than XOR require libgcrypt 1.8.0 or newer
+(e.g. `libgcrypt20-dev` on Debian/Ubuntu, `libgcrypt-devel` on
+RHEL/Fedora/SUSE). If it is installed in a non-standard location, pass
+`--with-gcrypt-inc=DIR` and `--with-gcrypt-lib=DIR` to `configure`.
+
+Older releases used libmcrypt, which is no longer maintained. The
+methods still offered (DES, 3DES, CAST-128, BLOWFISH, TWOFISH,
+RIJNDAEL-128 and SERPENT) are wire-compatible with libmcrypt builds, so
+clients and daemons can be upgraded one at a time. CAST-256, xTEA, 3WAY,
+LOKI97, RC2, RIJNDAEL-192/256, GOST, SAFER-sk64/128 and SAFER+ are no
+longer available, because libgcrypt either lacks them or implements them
+differently than libmcrypt did. ARCFOUR, WAKE and ENIGMA are gone too;
+they are stream ciphers and never worked in NSCA's cipher-feedback mode.
+
 
 
 Installing
